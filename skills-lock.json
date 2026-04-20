@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "finlab": {
+      "source": "koreal6803/finlab-ai",
+      "sourceType": "github",
+      "computedHash": "1490c71c22c09f17b141a09d0b007facf4d572b690fa1361d22d7df5c231e0d5"
+    }
+  }
+}

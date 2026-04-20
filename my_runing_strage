@@ -1,0 +1,134 @@
+from typing import Optional
+
+import pandas as pd
+from finlab import data
+from finlab.backtest import sim
+def momentum_breakout(train: str = '1999',
+                      window: int = 120, # Optimized parameter
+                      vol_boost: float = 1.2, # Optimized parameter
+                      top_k: int = 10,
+                      pos_limit: float = 0.35,
+                      stop_loss: float = 0.09,
+                      odd_vol_threshold: int = 1000,
+                      roe_threshold: float = 0.5416326861619083,
+                      rs_period: int = 120, # Optimized parameter from Optuna
+                      rs_threshold: float = 0.906608470298888): # Optimized parameter from Optuna
+    close = data.get('price:收盤價')
+    vol = data.get('price:成交股數')
+    rev = data.get('monthly_revenue:當月營收')
+    odd_vol = data.get('intraday_odd_lot_trade:成交股數')
+    roe = data.get('fundamental_features:ROE稅後') # Added ROE data
+    full_cash_filter = data.get('etl:full_cash_delivery_stock_filter') # Added full cash filter
+    benchmark_return = data.get('benchmark_return:發行量加權股價報酬指數') # Added benchmark return
+
+    # Calculate Relative Strength (RS)
+    stock_return = close.pct_change(rs_period) + 1
+    market_return = benchmark_return.pct_change(rs_period) + 1
+    market_return_aligned = market_return.reindex(close.index, method='ffill')
+    market_return_series = market_return_aligned.iloc[:, 0]
+    rs_before_fillna = stock_return.div(market_return_series, axis=0)
+    rs = rs_before_fillna.fillna(1)
+
+    rolling_high = close.rolling(window).max()
+    breakout = close >= rolling_high
+
+    cond_rev = rev.average(3) > rev.average(12)
+    cond_vol = vol.average(5) > vol.average(20) * vol_boost
+    cond_odd = odd_vol.average(10) > odd_vol_threshold
+    cond_roe = roe.rank(axis=1, pct=True) > roe_threshold # Added ROE condition
+    cond_rs = rs > rs_threshold # Added RS condition
+
+    base_mask = (breakout & cond_rev & cond_vol & cond_odd & cond_roe & full_cash_filter & cond_rs)
+    # 使用 rev_growth 作為排序因子
+    score = rev.average(3) / rev.average(12)
+
+
+    pos = score[base_mask].is_largest(top_k)
+
+    report = sim(
+        pos[pos.index > train],
+        resample='M',
+        resample_offset='11D',
+        position_limit=pos_limit,
+        upload=True,
+        stop_loss=stop_loss,
+        fee_ratio=1.425/1000/3
+    )
+    return report
+
+report = momentum_breakout()
+ar = report.metrics.annual_return() * 100
+sr = report.metrics.sharpe_ratio()
+md = report.metrics.max_drawdown() * 100
+print(f"年化報酬率:{ar:7.2f}%  夏普比率:{sr:7.2f}  最大回檔:{md:7.2f}%")
+
+from typing import Optional
+
+from finlab import data
+from finlab.backtest import sim
+import pandas as pd
+
+# Parameters from intention_factor defaults
+train: str = "1999"
+days: int = 50
+rs_window: int = 15
+rs_quantile: float = 0.9
+min_volume: int = 50_000
+min_odd: int = 150
+top_k: int = 5
+pos_limit: float = 0.33
+stop_loss: float = 0.15
+fee_ratio: Optional[float] = 1.425 / 1000 / 3
+resample: str = "Q"
+
+close = data.get("price:收盤價")
+volume = data.get("price:成交股數")
+rev = data.get("monthly_revenue:當月營收")
+odd_vol = data.get("intraday_odd_lot_trade:成交股數")
+eps = data.get("financial_statement:每股盈餘")
+yield_ratio = data.get('price_earning_ratio:殖利率(%)')
+current_ratio = data.get("fundamental_features:流動比率")
+per = data.get("price_earning_ratio:本益比")
+
+# 指標
+rs = close / close.shift(rs_window)
+m = volume.rolling(days).sum()
+v = close.pct_change().abs().rolling(days).sum()
+s = close / close.shift(days) - 1 # Reverted s calculation
+
+# 濾網條件
+cond_rev = rev.average(3) > rev.average(12)
+cond_liq = (s < 0.2) & (volume > min_volume)
+cond_rs = rs > rs.quantile_row(rs_quantile)
+cond_odd = odd_vol.average(10) > min_odd
+cond_yield = (yield_ratio >= yield_ratio.quantile(0.6, axis=1))
+cond_current_ratio = current_ratio > 100
+roc = data.indicator("ROC", timeperiod=5)
+cond_roc = roc > 0
+
+base_mask = cond_rev & cond_liq & cond_rs & cond_odd & cond_yield & cond_roc & cond_current_ratio
+
+# V5: Incorporate PER into the scoring function (inverse rank)
+# Handle potential NaN/inf values in PER before ranking
+per_cleaned = per.replace([float('inf'), -float('inf')], pd.NA).dropna(how='all')
+per_inverse_rank = (1 - per_cleaned.rank(axis=1, pct=True)).fillna(0) # Fillna with 0 for stocks with no PER data
+
+# Score: 動能 / 波動 * PER逆序排名
+score = (s / v / volume) * per_inverse_rank
+
+pos = score[base_mask].is_largest(top_k)
+
+report = sim(
+    pos[pos.index > train],
+    resample=resample,
+    position_limit=pos_limit,
+    stop_loss=stop_loss,
+    fee_ratio=fee_ratio,
+    upload=True,
+)
+
+ar = report.metrics.annual_return() * 100
+sr = report.metrics.sharpe_ratio()
+md = report.metrics.max_drawdown() * 100
+
+print(f"年化報酬率:{ar:7.2f}%  夏普比率:{sr:7.2f}  最大回檔:{md:7.2f}%")
