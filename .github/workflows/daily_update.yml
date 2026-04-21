@@ -2,8 +2,8 @@ name: Daily Quant Portfolio Update
 
 on:
   schedule:
-    # Run everyday at 15:30 Taipei Time (07:30 UTC)
-    - cron: '30 7 * * *'
+    # Run everyday at 15:35 Taipei Time (07:35 UTC) to avoid global queue delays
+    - cron: '35 7 * * *'
   workflow_dispatch:
 
 permissions:
