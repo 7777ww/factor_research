@@ -85,7 +85,7 @@ def generate_html_dashboard(results):
         p_val = round(r["details"]["drift"].get("p_val_ks", 0), 4)
         
         # format positions
-        pos_str = "\\n".join([f"{k}: {v}" for k, v in r["positions"].items()]) if r["positions"] else "None / Cash"
+        pos_str = "\n".join([f"{k}: {v}" for k, v in r["positions"].items()]) if r["positions"] else "None / Cash"
 
         cards_html += card_template.format(
             name=r["name"],
