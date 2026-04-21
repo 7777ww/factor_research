@@ -146,30 +146,44 @@ def run_daily_update():
     res_mb['positions'] = last_pos_mb[last_pos_mb > 0].to_dict() if not last_pos_mb.empty else {}
     results.append(res_mb)
 
-    # 2. Intention Factor
+    # 2. Intention Factor (意圖因子)
     print("Running Intention Factor...")
     volume = vol
     yield_ratio = data.get('price_earning_ratio:殖利率(%)')
     current_ratio = data.get('fundamental_features:流動比率')
     per = data.get('price_earning_ratio:本益比')
     
-    rs_intention = close / close.shift(15)
-    s_intention = close / close.shift(50) - 1
-    v_intention = close.pct_change().abs().rolling(50).sum()
+    # [指標計算] 動能與波動特徵
+    rs_intention = close / close.shift(15)               # 近 15 日相對強弱
+    s_intention = close / close.shift(50) - 1            # 近 50 日實質漲幅
+    v_intention = close.pct_change().abs().rolling(50).sum() # 近 50 日絕對波動總和
     
-    cond_rev_i = rev.average(3) > rev.average(12)
-    cond_liq_i = (s_intention < 0.2) & (volume > 50000)
-    cond_rs_i = rs_intention > rs_intention.quantile_row(0.9)
-    cond_odd_i = odd_vol.average(10) > 150
-    cond_yield_i = (yield_ratio >= yield_ratio.quantile(0.6, axis=1))
-    cond_current_i = current_ratio > 100
-    roc_i = close.pct_change(5) * 100
-    cond_roc_i = roc_i > 0
+    # [濾網條件] 籌碼、價值與流動性
+    cond_rev_i = rev.average(3) > rev.average(12)        # 營收條件：短期大於長期平均 (成長)
+    cond_liq_i = (s_intention < 0.2) & (volume > 50000)  # 流動性與乖離：漲幅不過熱且成交量夠大
+    cond_rs_i = rs_intention > rs_intention.quantile_row(0.9) # 相對強勢：挑選市場前 10%
+    cond_odd_i = odd_vol.average(10) > 150               # 零股人氣：散戶有基本參與度
+    cond_yield_i = (yield_ratio >= yield_ratio.quantile(0.6, axis=1)) # 高殖利率：前 40% 的殖利率保護
+    cond_current_i = current_ratio > 100                 # 財務安全：流動比率 > 100%
     
+    # ROC 計算 (為避免 Github 缺乏 C 語言 TA-Lib 庫，改用純 pandas 實現，邏輯結果 100% 相同)
+    roc_i = close.pct_change(5) * 100                    # 近 5 日動能變化率
+    cond_roc_i = roc_i > 0                               # 股價處於短期上升趨勢
+    
+    # 組合濾網
     mask_i = cond_rev_i & cond_liq_i & cond_rs_i & cond_odd_i & cond_yield_i & cond_roc_i & cond_current_i
-    per_inv_rank = (1 - per.rank(axis=1, pct=True)).fillna(0)
+    
+    # [評分系統] 過濾極端 PE 並計算本益比倒數排名 (Inverse Rank)
+    per_cleaned = per.replace([float('inf'), -float('inf')], pd.NA).dropna(how='all')
+    per_inv_rank = (1 - per_cleaned.rank(axis=1, pct=True)).fillna(0)
+    
+    # 綜合動能意圖分數 (Score) = (漲幅 / 波動 / 量能) * 本益比優勢
     score_i = (s_intention / v_intention / volume) * per_inv_rank
+    
+    # 取前 5 檔，權重平分 (0.33 limits up to 3 stocks basically, wait limit is 0.33)
     pos_i = score_i[mask_i].is_largest(5)
+    
+    # 開始回測
     report_i = sim(pos_i.loc[START_DATE:], resample='Q', position_limit=0.33, stop_loss=0.15, upload=False)
 
     shm_i = StrategyHealthMonitor(report_i, report_0050)
